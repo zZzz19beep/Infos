@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
     //   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     // }
     
-    const { documentId, content, model = 'deepseek-chat' } = await req.json();
+    const { documentId, content, model = 'deepseek-chat', forceRefresh = false } = await req.json();
     
     if (!documentId) {
       return NextResponse.json({ error: '缺少文档ID' }, { status: 400 });
@@ -37,12 +37,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: '文档不存在' }, { status: 404 });
     }
     
-    // 检查是否已有摘要，有则更新，无则创建
+    // 检查是否已有摘要且不是强制刷新
     let summary = await Summary.findOne({ documentId });
+    let cached = false;
+    
+    // 如果有缓存且不是强制刷新，直接返回缓存的摘要
+    if (summary && !forceRefresh) {
+      cached = true;
+      return NextResponse.json({ 
+        summary: summary.content, 
+        cached: true,
+        timestamp: summary.timestamp,
+        model: summary.model
+      });
+    }
+    
+    // 如果强制刷新或没有缓存，则生成新摘要
+    const aiSummary = await generateSummaryWithDeepseekR1(content);
     
     if (summary) {
       // 更新现有摘要
-      summary.content = content;
+      summary.content = aiSummary;
       summary.timestamp = Date.now();
       summary.model = model;
       await summary.save();
@@ -50,13 +65,18 @@ export async function POST(req: NextRequest) {
       // 创建新摘要
       summary = await Summary.create({
         documentId,
-        content,
+        content: aiSummary,
         timestamp: Date.now(),
         model
       });
     }
     
-    return NextResponse.json(summary);
+    return NextResponse.json({
+      summary: aiSummary,
+      cached: false,
+      timestamp: Date.now(),
+      model
+    });
   } catch (error) {
     console.error('生成摘要失败:', error);
     return NextResponse.json({ error: '生成摘要失败' }, { status: 500 });
@@ -99,5 +119,50 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     console.error('获取摘要失败:', error);
     return NextResponse.json({ error: '获取摘要失败' }, { status: 500 });
+  }
+}
+
+// 使用deepseek API生成摘要
+async function generateSummaryWithDeepseekR1(content: string): Promise<string> {
+  try {
+    const response = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY || 'sk-2e42fb2d6a4a4f118859307cce9d1ec0'}`
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [
+          {
+            role: 'system', 
+            content: '你是一个专业的文章摘要生成助手。请为用户提供的文章生成一个简洁明了的摘要，控制在200字以内。只需输出摘要内容，不要加入其他解释或评论。'
+          },
+          {
+            role: 'user', 
+            content: `请为以下文章生成摘要：\n\n${content}`
+          }
+        ],
+        stream: false
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`API请求失败: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    
+    // 从API响应中提取摘要内容
+    if (result.choices && result.choices.length > 0 && result.choices[0].message) {
+      return result.choices[0].message.content;
+    } else {
+      throw new Error('无法从API响应中提取摘要');
+    }
+  } catch (error) {
+    console.error('调用deepseek API失败:', error);
+    // 如果API调用失败，返回一个基本的摘要
+    const previewText = content.slice(0, 150).replace(/[#*]/g, '');
+    return `摘要生成失败，这是内容预览：${previewText}...`;
   }
 } 
