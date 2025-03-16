@@ -3,6 +3,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { connectToDatabase, getModels } from '../../lib/database';
 import crypto from 'crypto';
 
+// 支持的模型列表
+export const SUPPORTED_MODELS = {
+  'deepseek-chat': {
+    name: 'DeepSeek Chat',
+    description: '由DeepSeek提供的AI大模型'
+  },
+  // 后续可以添加更多模型
+};
+
 // 生成摘要API
 export async function POST(req: NextRequest) {
   try {
@@ -20,6 +29,11 @@ export async function POST(req: NextRequest) {
     
     if (!content) {
       return NextResponse.json({ error: '缺少摘要内容' }, { status: 400 });
+    }
+    
+    // 验证模型是否支持
+    if (!SUPPORTED_MODELS[model]) {
+      return NextResponse.json({ error: `不支持的模型: ${model}` }, { status: 400 });
     }
     
     try {
@@ -41,8 +55,8 @@ export async function POST(req: NextRequest) {
     let summary = await Summary.findOne({ documentId });
     let cached = false;
     
-    // 如果有缓存且不是强制刷新，直接返回缓存的摘要
-    if (summary && !forceRefresh) {
+    // 如果有缓存且不是强制刷新，且模型相同，直接返回缓存的摘要
+    if (summary && !forceRefresh && summary.model === model) {
       cached = true;
       return NextResponse.json({ 
         summary: summary.content, 
@@ -52,8 +66,8 @@ export async function POST(req: NextRequest) {
       });
     }
     
-    // 如果强制刷新或没有缓存，则生成新摘要
-    const aiSummary = await generateSummaryWithDeepseekR1(content);
+    // 如果强制刷新或没有缓存，或者模型不同，则生成新摘要
+    const aiSummary = await generateSummary(content, model);
     
     if (summary) {
       // 更新现有摘要
@@ -119,6 +133,24 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     console.error('获取摘要失败:', error);
     return NextResponse.json({ error: '获取摘要失败' }, { status: 500 });
+  }
+}
+
+// 获取支持的模型列表
+export async function OPTIONS(req: NextRequest) {
+  return NextResponse.json({
+    models: SUPPORTED_MODELS
+  });
+}
+
+// 摘要生成工厂函数
+async function generateSummary(content: string, model: string): Promise<string> {
+  switch (model) {
+    case 'deepseek-chat':
+      return await generateSummaryWithDeepseekR1(content);
+    // 后续可以添加更多模型的处理
+    default:
+      throw new Error(`不支持的模型: ${model}`);
   }
 }
 
